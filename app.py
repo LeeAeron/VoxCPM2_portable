@@ -809,6 +809,8 @@ button.primary {
   font-weight: 600 !important;
   border-radius: 10px !important;
 }
+.lora-refresh-btn { max-width: 44px !important; flex: 0 0 44px !important; }
+.lora-refresh-btn button { padding: 6px !important; min-width: 0 !important; }
 """
 
 # === JS: принудительно тёмная тема (IIFE — одноразовый редирект с __theme=dark) ===
@@ -872,9 +874,9 @@ def _advanced_block(prefix: str, show_denoise: bool = False):
             lora_sel = gr.Dropdown(
                 label="🧬 LoRA", choices=_choices,
                 value=(_ACTIVE_LORA if _ACTIVE_LORA in _choices else _NONE),
-                interactive=True, scale=5, min_width=200, elem_id=f"{prefix}_lora",
+                interactive=True, scale=20, min_width=200, elem_id=f"{prefix}_lora",
             )
-            lora_refresh = gr.Button("🔄", size="sm", scale=1, min_width=50, elem_id=f"{prefix}_lora_refresh")
+            lora_refresh = gr.Button("🔄", size="sm", scale=0, min_width=40, elem_classes=["lora-refresh-btn"], elem_id=f"{prefix}_lora_refresh")
 
         lora_sel.change(
             fn=lambda n: lora_detach() if n == _NONE else lora_attach(n),
