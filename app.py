@@ -846,23 +846,38 @@ def _seed_row(prefix: str):
 def _advanced_block(prefix: str, show_denoise: bool = False):
     """Accordion с расширенными параметрами."""
     with gr.Accordion(label=I18N("label_advanced"), open=False, elem_id=f"{prefix}_advanced"):
+        # LoRA — галочка включает dropdown
         with gr.Row():
+            use_lora = gr.Checkbox(
+                value=bool(_ACTIVE_LORA),
+                label="🧬 Использовать LoRA",
+                info="Fine-tuned веса из папки lora/",
+                elem_id=f"{prefix}_use_lora",
+            )
+        with gr.Row(visible=bool(_ACTIVE_LORA)) as lora_row:
             lora_sel = gr.Dropdown(
-                label="LoRA (из папки lora/)",
-                choices=["-- Без LoRA --"] + scan_local_loras(),
-                value="-- Без LoRA --" if not _ACTIVE_LORA else _ACTIVE_LORA,
+                label="LoRA",
+                choices=scan_local_loras() or ["(пусто — обучи в табе LoRA)"],
+                value=_ACTIVE_LORA if _ACTIVE_LORA in (scan_local_loras() or []) else None,
                 interactive=True, scale=3, elem_id=f"{prefix}_lora",
             )
             lora_refresh = gr.Button("🔄", size="sm", scale=0, elem_id=f"{prefix}_lora_refresh")
-        lora_status_box = gr.Textbox(label="LoRA статус", interactive=False, value=lora_active_status(), elem_id=f"{prefix}_lora_status")
-        # Handlers — dropdown change = attach/detach
-        def _on_lora_change(name):
-            if name == "-- Без LoRA --":
-                return lora_detach()
-            return lora_attach(name)
-        lora_sel.change(_on_lora_change, inputs=[lora_sel], outputs=[lora_status_box])
+
+        def _toggle_lora(enabled, name):
+            if not enabled:
+                lora_detach()
+                return gr.update(visible=False)
+            if name and name != "(пусто — обучи в табе LoRA)":
+                lora_attach(name)
+            return gr.update(visible=True, choices=scan_local_loras() or ["(пусто — обучи в табе LoRA)"])
+
+        use_lora.change(_toggle_lora, inputs=[use_lora, lora_sel], outputs=[lora_row])
+        lora_sel.change(
+            fn=lambda n: lora_attach(n) if n and n != "(пусто — обучи в табе LoRA)" else None,
+            inputs=[lora_sel],
+        )
         lora_refresh.click(
-            fn=lambda: gr.update(choices=["-- Без LoRA --"] + scan_local_loras()),
+            fn=lambda: gr.update(choices=scan_local_loras() or ["(пусто — обучи в табе LoRA)"]),
             outputs=[lora_sel],
         )
         with gr.Row():
