@@ -219,37 +219,50 @@ def scan_local_loras() -> list[str]:
 
 
 def lora_attach(name: str) -> str:
-    """Подключить LoRA к загруженной модели (hot-swap)."""
-    global _ACTIVE_LORA
+    """Подключить LoRA.
+    Если модель ещё не грузилась с LoRA — полная reinit с lora_weights_path.
+    Иначе hot-swap через unload + load_lora."""
+    global _ACTIVE_LORA, _model
     if not name or name == "-- Без LoRA --":
         return lora_detach()
     path = LORA_DIR / name
     if not path.exists() or not (path / "lora_config.json").exists():
-        return f"❌ LoRA '{name}' не найдена или повреждена (нет lora_config.json)"
+        return f"❌ LoRA '{name}' не найдена (нет lora_config.json)"
     try:
-        model = get_model()
+        # Проверяем — есть ли у модели LoRA-структура
+        has_lora_structure = (
+            _model is not None and getattr(_model, "lora_enabled", False) is not False
+            and hasattr(_model, "load_lora")
+        )
+        # Если модель загружена но без LoRA-структуры — полный reload
+        if _model is None or _ACTIVE_LORA is None:
+            print(f"[lora] reloading model with LoRA structure: {path}")
+            model = get_model(lora_weights_path=str(path), force_reload=(_model is not None))
+        else:
+            model = _model
+            try:
+                model.unload_lora()
+            except Exception:
+                pass
+            model.load_lora(str(path))
         try:
-            model.unload_lora()
+            model.set_lora_enabled(True)
         except Exception:
             pass
-        model.load_lora(str(path))
-        model.set_lora_enabled(True)
         _ACTIVE_LORA = name
-        return f"✅ LoRA '{name}' загружена и активна"
+        return f"✅ LoRA '{name}' активна"
     except Exception as exc:
         traceback.print_exc()
         return f"❌ Ошибка загрузки LoRA: {exc}"
 
 
 def lora_detach() -> str:
-    """Отключить активную LoRA."""
+    """Отключить активную LoRA (set_lora_enabled(False), модель остаётся в памяти)."""
     global _ACTIVE_LORA
     try:
-        if _ACTIVE_LORA:
-            model = get_model()
+        if _ACTIVE_LORA and _model is not None:
             try:
-                model.set_lora_enabled(False)
-                model.unload_lora()
+                _model.set_lora_enabled(False)
             except Exception as e:
                 print(f"[lora] detach warning: {e}")
         _ACTIVE_LORA = None
@@ -445,16 +458,23 @@ print(f"[VoxCPM2] Device: {DEVICE_INFO}")
 # === Ленивая загрузка модели ===
 _model = None
 
-def get_model() -> VoxCPM:
+def get_model(lora_weights_path: Optional[str] = None, force_reload: bool = False) -> VoxCPM:
+    """Загружает модель. При первом lora_weights_path — модель перезагружается с LoRA-структурой
+    (нужно для load_lora hot-swap в дальнейшем)."""
     global _model
-    if _model is not None:
+    if _model is not None and not force_reload and lora_weights_path is None:
         return _model
-    print(f"[VoxCPM2] Loading {MODEL_REF} (first time — downloading ~4-5 GB)...")
-    _model = VoxCPM.from_pretrained(
-        MODEL_REF,
-        load_denoiser=True,
-        optimize=False,  # фикс threading-багов torch.compile (из Colab-ноутбука AIQuest)
-    )
+    if force_reload and _model is not None:
+        del _model
+        import gc; gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        _model = None
+    print(f"[VoxCPM2] Loading {MODEL_REF}" + (f" + LoRA {lora_weights_path}" if lora_weights_path else ""))
+    kwargs = dict(load_denoiser=True, optimize=False)
+    if lora_weights_path:
+        kwargs["lora_weights_path"] = lora_weights_path
+    _model = VoxCPM.from_pretrained(MODEL_REF, **kwargs)
     print(f"[VoxCPM2] Model loaded. Sample rate: {_model.tts_model.sample_rate} Hz")
     return _model
 
