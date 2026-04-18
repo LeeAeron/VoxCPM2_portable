@@ -634,6 +634,7 @@ I18N = gr.I18n(
         "cloud_voices_label": "Available voices",
         "download_status_label": "Download result",
         "brand_header_html": _BRAND_HTML_EN,
+        "transcript_info": "Fill in to enable Ultimate mode (max fidelity). Auto-fills from voice pack.",
     },
     ru={
         "tab_tts": "Текст в речь",
@@ -672,6 +673,7 @@ I18N = gr.I18n(
         "cloud_voices_label": "Доступные голоса",
         "download_status_label": "Результат загрузки",
         "brand_header_html": _BRAND_HTML_RU,
+        "transcript_info": "Заполните для Ultimate-режима (макс. качество). Автозаполняется из пака.",
     },
 )
 
@@ -773,6 +775,7 @@ def build_ui():
                     )
                     vc_transcript = gr.Textbox(
                         label=I18N("label_transcript"),
+                        info=I18N("transcript_info"),
                         placeholder="Точный текст того что говорится в референс-аудио",
                         lines=2,
                         elem_id="vc_transcript",
@@ -829,78 +832,6 @@ def build_ui():
             vc_refresh_btn.click(_vc_refresh, outputs=[vc_voice_pick])
             vc_load_cloud_btn.click(load_cloud_list, outputs=[vc_cloud_status, vc_cloud_voices])
             vc_download_btn.click(download_selected_voices, inputs=[vc_cloud_voices], outputs=[vc_download_status, vc_voice_pick])
-
-        # === Таб 4: Ultimate Cloning ===
-        with gr.Tab(label=I18N("tab_ultimate")):
-            gr.Markdown(I18N("ultimate_instructions"))
-            with gr.Row(equal_height=False):
-                with gr.Column(scale=1):
-                    uc_voice_pick = gr.Dropdown(
-                        label=I18N("label_preset"),
-                        choices=_voice_choices,
-                        value="-- Свой файл --",
-                        interactive=True,
-                        elem_id="uc_voice_pick",
-                    )
-                    uc_refresh_btn = gr.Button(I18N("btn_refresh"), size="sm", elem_id="uc_refresh_btn")
-                    uc_ref = gr.Audio(
-                        label=I18N("label_reference"),
-                        type="numpy",
-                        sources=["upload", "microphone"],
-                        elem_id="uc_ref",
-                    )
-                    uc_transcript = gr.Textbox(
-                        label=I18N("label_transcript"),
-                        placeholder="Точный текст того что говорится в референсе",
-                        lines=2,
-                        elem_id="uc_transcript",
-                    )
-                    uc_text = gr.Textbox(label=I18N("label_content"), placeholder="Привет, добро пожаловать в VoxCPM2!", lines=3, elem_id="uc_text")
-                    uc_cfg, uc_steps, uc_norm, uc_retry, uc_denoise = _advanced_block("uc", show_denoise=True)
-                    uc_seed, uc_locked = _seed_row("uc")
-                    uc_btn = gr.Button(I18N("btn_ultimate"), variant="primary", size="lg", elem_id="uc_btn")
-                with gr.Column(scale=1):
-                    uc_out = gr.Audio(label=I18N("label_output"), type="filepath", elem_id="uc_out")
-                    with gr.Accordion(I18N("accordion_cloud"), open=False, elem_id="uc_download_accordion"):
-                        gr.Markdown(f"*Репозиторий: `{CLOUD_VOICES_REPO}`*")
-                        uc_cloud_status = gr.Textbox(
-                            label="Статус",
-                            interactive=False,
-                            value=I18N("cloud_status_initial"),
-                            elem_id="uc_cloud_status",
-                        )
-                        uc_load_cloud_btn = gr.Button(I18N("btn_load_cloud"), variant="secondary", elem_id="uc_load_cloud_btn")
-                        uc_cloud_voices = gr.CheckboxGroup(
-                            label=I18N("cloud_voices_label"),
-                            choices=[],
-                            interactive=True,
-                            elem_id="uc_cloud_voices",
-                        )
-                        uc_download_btn = gr.Button(I18N("btn_download"), variant="primary", elem_id="uc_download_btn")
-                        uc_download_status = gr.Textbox(label=I18N("download_status_label"), interactive=False, elem_id="uc_download_status")
-
-            uc_btn.click(
-                ultimate_clone,
-                inputs=[uc_text, uc_ref, uc_transcript, uc_cfg, uc_steps, uc_seed, uc_locked, uc_norm, uc_denoise, uc_retry],
-                outputs=[uc_out, uc_seed],
-            )
-
-            def _uc_load_preset(name):
-                if not name or name == "-- Свой файл --":
-                    return None, ""
-                path = voice_audio_path(name)
-                if not path:
-                    return None, ""
-                wav, sr = sf.read(path)
-                return (sr, wav), voice_transcript(name)
-
-            def _uc_refresh():
-                return gr.update(choices=["-- Свой файл --"] + scan_local_voices())
-
-            uc_voice_pick.change(_uc_load_preset, inputs=[uc_voice_pick], outputs=[uc_ref, uc_transcript])
-            uc_refresh_btn.click(_uc_refresh, outputs=[uc_voice_pick])
-            uc_load_cloud_btn.click(load_cloud_list, outputs=[uc_cloud_status, uc_cloud_voices])
-            uc_download_btn.click(download_selected_voices, inputs=[uc_cloud_voices], outputs=[uc_download_status, uc_voice_pick])
 
     return demo
 
