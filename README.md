@@ -196,7 +196,9 @@ update.bat
 
 ## Support This Project
 
-**[All donation methods](https://dalink.to/nerual_dreming)** | **[boosty.to/neuro_art](https://boosty.to/neuro_art)**
+I build software and do research in AI. Most of what I create is free and open source. Your donations allow me to keep creating and exploring without worrying about where the next meal comes from =)
+
+**[All donation methods](https://dalink.to/nerual_dreming)** | **[dalink.to/nerual_dreming](https://dalink.to/nerual_dreming)** | **[boosty.to/neuro_art](https://boosty.to/neuro_art)**
 
 - **BTC:** `1E7dHL22RpyhJGVpcvKdbyZgksSYkYeEBC`
 - **ETH (ERC20):** `0xb5db65adf478983186d4897ba92fe2c25c594a0c`

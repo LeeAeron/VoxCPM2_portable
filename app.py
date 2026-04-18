@@ -868,13 +868,13 @@ def _advanced_block(prefix: str, show_denoise: bool = False):
     with gr.Accordion(label=I18N("label_advanced"), open=False, elem_id=f"{prefix}_advanced"):
         _NONE = "-- Без LoRA --"
         _choices = [_NONE] + scan_local_loras()
-        with gr.Row():
+        with gr.Row(equal_height=True):
             lora_sel = gr.Dropdown(
                 label="🧬 LoRA", choices=_choices,
                 value=(_ACTIVE_LORA if _ACTIVE_LORA in _choices else _NONE),
-                interactive=True, scale=4, elem_id=f"{prefix}_lora",
+                interactive=True, scale=5, min_width=200, elem_id=f"{prefix}_lora",
             )
-            lora_refresh = gr.Button("🔄", size="sm", scale=0, elem_id=f"{prefix}_lora_refresh")
+            lora_refresh = gr.Button("🔄", size="sm", scale=1, min_width=50, elem_id=f"{prefix}_lora_refresh")
 
         lora_sel.change(
             fn=lambda n: lora_detach() if n == _NONE else lora_attach(n),

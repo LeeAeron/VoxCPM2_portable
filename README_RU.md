@@ -196,9 +196,9 @@ update.bat
 
 ## Поддержать проект
 
-Большая часть моих проектов бесплатная и open source. Донаты помогают продолжать разработку.
+Я создаю софт и занимаюсь исследованиями в области ИИ. Большая часть всего, что я делаю, находится в открытом доступе. Ваши пожертвования позволяют мне создавать и исследовать больше, не отвлекаясь на поиск еды для продолжения существования =)
 
-**[Все способы поддержки](https://dalink.to/nerual_dreming)** | **[boosty.to/neuro_art](https://boosty.to/neuro_art)**
+**[Все способы поддержки](https://dalink.to/nerual_dreming)** | **[dalink.to/nerual_dreming](https://dalink.to/nerual_dreming)** | **[boosty.to/neuro_art](https://boosty.to/neuro_art)**
 
 - **BTC:** `1E7dHL22RpyhJGVpcvKdbyZgksSYkYeEBC`
 - **ETH (ERC20):** `0xb5db65adf478983186d4897ba92fe2c25c594a0c`
