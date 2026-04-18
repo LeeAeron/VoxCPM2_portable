@@ -810,13 +810,17 @@ button.primary {
   border-radius: 10px !important;
 }
 .lora-refresh-btn {
-  max-width: 44px !important; flex: 0 0 44px !important;
-  margin-top: 22px !important;  /* выравнивание с полем dropdown (под label) */
+  max-width: 44px !important;
+  flex: 0 0 44px !important;
+  align-self: flex-end !important;
+  margin-top: auto !important;
+  margin-bottom: 4px !important;
 }
 .lora-refresh-btn button {
-  padding: 0 !important; min-width: 0 !important;
-  height: 44px !important; max-height: 44px !important;
+  padding: 0 !important;
+  min-width: 0 !important;
   width: 44px !important;
+  height: 42px !important;
 }
 """
 
