@@ -5,9 +5,62 @@
 """
 
 # === КРИТИЧЕСКИЙ ПАТЧ: отключение torch._dynamo ДО импорта voxcpm ===
-# (Фикс threading-бага torch.compile при многопоточной загрузке)
 import os
+import sys
+import asyncio
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# === Windows retry_open patch для anyio/aiofiles (PermissionError от антивируса) ===
+if sys.platform == "win32":
+    try:
+        import anyio
+        import anyio._core._fileio
+        _original_anyio_open = anyio._core._fileio.open_file
+
+        async def _retry_anyio_open(file, *args, **kwargs):
+            max_retries = 20
+            delay = 0.2
+            for attempt in range(max_retries):
+                try:
+                    return await _original_anyio_open(file, *args, **kwargs)
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay)
+                        delay *= 1.2
+                    else:
+                        raise
+
+        anyio._core._fileio.open_file = _retry_anyio_open
+        anyio.open_file = _retry_anyio_open
+        try:
+            import starlette.responses
+            starlette.responses.anyio.open_file = _retry_anyio_open
+        except Exception:
+            pass
+    except ImportError:
+        pass
+
+    try:
+        import aiofiles
+        import aiofiles.threadpool
+        _original_aiofiles_open = aiofiles.threadpool._open
+
+        async def _retry_aiofiles_open(*args, **kwargs):
+            max_retries = 20
+            delay = 0.2
+            for attempt in range(max_retries):
+                try:
+                    return await _original_aiofiles_open(*args, **kwargs)
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(delay)
+                        delay *= 1.2
+                    else:
+                        raise
+
+        aiofiles.threadpool._open = _retry_aiofiles_open
+    except ImportError:
+        pass
 
 import torch
 import torch._dynamo
@@ -62,14 +115,26 @@ def voice_audio_path(name: str) -> Optional[str]:
     return None
 
 
+def get_first_ru_voice() -> Optional[str]:
+    """Первый RU_ голос из локального пака (дефолт)."""
+    for name in scan_local_voices():
+        if name.upper().startswith("RU_"):
+            return name
+    return None
+
+
 def voice_transcript(name: str) -> str:
-    """Транскрипт голоса из voices/{name}.txt, если есть."""
-    p = VOICES_DIR / f"{name}.txt"
-    if p.exists():
-        try:
-            return p.read_text(encoding="utf-8").strip()
-        except Exception:
-            return ""
+    """Транскрипт голоса из voices/{name}.txt или .lab, если есть."""
+    for ext in (".txt", ".lab"):
+        p = VOICES_DIR / f"{name}{ext}"
+        if p.exists():
+            try:
+                return p.read_text(encoding="utf-8").strip()
+            except Exception:
+                try:
+                    return p.read_text(encoding="cp1251").strip()
+                except Exception:
+                    return ""
     return ""
 
 
@@ -112,22 +177,37 @@ def download_cloud_voice(name: str) -> bool:
         return False
 
 
-def download_all_cloud_voices(progress=gr.Progress()):
-    """Скачать все доступные голоса из HF dataset, с прогрессом."""
+def load_cloud_list():
+    """Загрузить список голосов с HF (как в Qwen3-TTS). Возвращает (status, checkbox_update)."""
     voices = fetch_cloud_voices_list()
-    if not voices:
-        return "Не удалось получить список голосов с HuggingFace."
-    local = set(scan_local_voices())
-    to_download = [v for v in voices if v not in local]
-    if not to_download:
-        return f"Все {len(voices)} голосов уже скачаны."
+    if voices:
+        return (
+            f"Найдено {len(voices)} голосов. Репозиторий: {CLOUD_VOICES_REPO}",
+            gr.update(choices=voices, value=[]),
+        )
+    return (
+        "Не удалось загрузить список голосов.",
+        gr.update(choices=[], value=[]),
+    )
+
+
+def download_selected_voices(selected):
+    """Скачать выбранные голоса. Возвращает (status, updated_dropdown_choices)."""
+    if not selected:
+        return (
+            "Выберите голоса для скачивания.",
+            gr.update(),
+        )
     ok, fail = 0, 0
-    for i, v in enumerate(progress.tqdm(to_download, desc="Скачивание")):
+    for v in selected:
         if download_cloud_voice(v):
             ok += 1
         else:
             fail += 1
-    return f"Скачано: {ok}, ошибок: {fail}. Всего в voices/: {len(scan_local_voices())}."
+    return (
+        f"Скачано: {ok} из {len(selected)}. Ошибок: {fail}.",
+        gr.update(choices=["-- Свой файл --"] + scan_local_voices()),
+    )
 
 # === Определение устройства ===
 def _detect_device() -> tuple[str, str]:
@@ -263,13 +343,27 @@ def voice_design(description, text, cfg, steps, seed, locked, normalize, retry):
         raise gr.Error(f"Ошибка генерации / Generation error: {e}") from e
 
 
+def _numpy_to_tempfile(ref_audio):
+    """Сохранить numpy-аудио (sr, wav) во временный wav и вернуть путь.
+    Если на вход path (str) — вернуть как есть."""
+    if ref_audio is None:
+        return None
+    if isinstance(ref_audio, str):
+        return ref_audio
+    sr, wav = ref_audio
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    sf.write(tmp.name, wav, sr)
+    return tmp.name
+
+
 def voice_clone(text, ref_audio, style, transcript, cfg, steps, seed, locked, normalize, denoise, retry):
-    """Voice Cloning. Если transcript заполнен — автоматически используется Ultimate-режим
-    (prompt_wav_path + prompt_text), иначе обычный reference-only."""
+    """Voice Cloning. Если transcript заполнен — автоматически Ultimate-режим."""
     if not (text or "").strip():
         raise gr.Error("Введите текст / Please enter text.")
-    if not ref_audio:
+    if ref_audio is None:
         raise gr.Error("Загрузите референс-аудио / Please upload reference audio.")
+    ref_audio = _numpy_to_tempfile(ref_audio)
     try:
         model = get_model()
         final_text = text.strip()
@@ -305,10 +399,11 @@ def voice_clone(text, ref_audio, style, transcript, cfg, steps, seed, locked, no
 def ultimate_clone(text, ref_audio, transcript, cfg, steps, seed, locked, normalize, denoise, retry):
     if not (text or "").strip():
         raise gr.Error("Введите текст / Please enter text.")
-    if not ref_audio:
+    if ref_audio is None:
         raise gr.Error("Загрузите референс-аудио / Please upload reference audio.")
     if not (transcript or "").strip():
         raise gr.Error("Введите транскрипт референса / Please enter reference transcript.")
+    ref_audio = _numpy_to_tempfile(ref_audio)
     try:
         model = get_model()
         used_seed = _resolve_seed(seed, locked)
@@ -329,97 +424,6 @@ def ultimate_clone(text, ref_audio, transcript, cfg, steps, seed, locked, normal
         raise gr.Error(f"Ошибка генерации / Generation error: {e}") from e
 
 
-# === i18n (RU / EN) ===
-_I18N_TRANSLATIONS = {
-    "en": {
-        "app_title": "VoxCPM2 — Multilingual TTS",
-        "app_subtitle": "2B parameters · 30 languages · 48 kHz output · Voice Design & Cloning",
-        "tab_tts": "Text-to-Speech",
-        "tab_design": "Voice Design",
-        "tab_clone": "Voice Cloning",
-        "tab_ultimate": "Ultimate Cloning",
-        "tts_instructions": "Enter any text and the model will synthesize speech with natural prosody. Supports 30 languages including Russian, English, Chinese, etc.",
-        "design_instructions": "Create a brand-new voice from a natural-language description — no reference audio needed. Describe gender, age, tone, emotion, pace, accent.",
-        "clone_instructions": "Upload a short reference audio clip (5-30 s, up to 50 s) to clone the voice. Optionally steer emotion/pace with a style description.",
-        "ultimate_instructions": "Provide reference audio AND its exact transcript for maximum fidelity cloning. The model continues the reference audio preserving every vocal detail.",
-        "text_label": "Text",
-        "text_placeholder": "Enter text in any of the 30 supported languages...",
-        "description_label": "Voice description",
-        "description_placeholder": "e.g. A young woman, gentle and sweet voice",
-        "content_label": "Text content",
-        "content_placeholder": "Hello, welcome to VoxCPM2!",
-        "reference_label": "Reference audio",
-        "style_label": "Style description (optional)",
-        "style_placeholder": "e.g. slightly faster, cheerful tone",
-        "transcript_label": "Reference audio transcript",
-        "transcript_placeholder": "The exact transcript of the reference audio",
-        "cfg_label": "CFG Scale",
-        "cfg_info": "Higher = closer to prompt, lower = more creative",
-        "steps_label": "Inference Steps",
-        "steps_info": "Higher = better quality but slower (5-10 for speed)",
-        "seed_label": "Seed",
-        "lock_label": "Lock Seed",
-        "advanced_label": "Advanced settings",
-        "normalize_label": "Text normalization (wetext)",
-        "normalize_info": "Normalize numbers, dates, abbreviations",
-        "denoise_label": "Denoise reference audio",
-        "denoise_info": "Apply ZipEnhancer denoising to reference audio",
-        "retry_label": "Retry on bad case",
-        "retry_info": "Regenerate if quality is poor",
-        "generate_tts": "Generate Speech",
-        "generate_design": "Design Voice",
-        "generate_clone": "Clone Voice",
-        "generate_ultimate": "Ultimate Clone",
-        "output_label": "Generated audio",
-        "device_label": "Device",
-    },
-    "ru": {
-        "app_title": "VoxCPM2 — Мультиязычный TTS",
-        "app_subtitle": "2B параметров · 30 языков · 48 kHz · Дизайн и клонирование голоса",
-        "tab_tts": "Текст в речь",
-        "tab_design": "Дизайн голоса",
-        "tab_clone": "Клонирование",
-        "tab_ultimate": "Ultimate-клонирование",
-        "tts_instructions": "Введите любой текст — модель синтезирует речь с естественной просодией. 30 языков: русский, английский, китайский и др.",
-        "design_instructions": "Создайте уникальный голос из текстового описания — без референс-аудио. Опишите пол, возраст, тон, эмоцию, темп, акцент.",
-        "clone_instructions": "Загрузите короткий референс (5-30 сек, до 50 сек) для клонирования голоса. Опционально задайте стиль: эмоция, темп.",
-        "ultimate_instructions": "Референс-аудио + его точный транскрипт для максимальной верности клонирования. Модель продолжает референс, сохраняя все детали голоса.",
-        "text_label": "Текст",
-        "text_placeholder": "Введите текст на любом из 30 поддерживаемых языков...",
-        "description_label": "Описание голоса",
-        "description_placeholder": "например: Молодая женщина, нежный и мягкий голос",
-        "content_label": "Текст для озвучки",
-        "content_placeholder": "Привет, добро пожаловать в VoxCPM2!",
-        "reference_label": "Референс-аудио",
-        "style_label": "Описание стиля (опционально)",
-        "style_placeholder": "например: чуть быстрее, бодрым тоном",
-        "transcript_label": "Транскрипт референс-аудио",
-        "transcript_placeholder": "Точный текст того, что говорится в референс-аудио",
-        "cfg_label": "CFG Scale",
-        "cfg_info": "Выше = ближе к промпту, ниже = больше креатива",
-        "steps_label": "Шаги диффузии",
-        "steps_info": "Больше = качественнее, но медленнее (5-10 для скорости)",
-        "seed_label": "Seed",
-        "lock_label": "Зафиксировать Seed",
-        "advanced_label": "Расширенные настройки",
-        "normalize_label": "Нормализация текста (wetext)",
-        "normalize_info": "Обработка чисел, дат, сокращений",
-        "denoise_label": "Шумоподавление референса",
-        "denoise_info": "ZipEnhancer денойзинг референс-аудио",
-        "retry_label": "Повтор при плохой генерации",
-        "retry_info": "Перегенерировать если качество плохое",
-        "generate_tts": "Синтезировать",
-        "generate_design": "Создать голос",
-        "generate_clone": "Клонировать",
-        "generate_ultimate": "Ultimate-клонировать",
-        "output_label": "Результат",
-        "device_label": "Устройство",
-    },
-}
-# Aliases для русского
-_I18N_TRANSLATIONS["ru-RU"] = _I18N_TRANSLATIONS["ru"]
-
-I18N = gr.I18n(**_I18N_TRANSLATIONS)
 
 
 # === Примеры (gr.Examples) ===
@@ -453,7 +457,8 @@ CLONE_STYLE_EXAMPLES = [
 _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 * { font-family: 'Inter', 'Segoe UI', sans-serif !important; }
-.gradio-container { max-width: 1200px !important; margin: auto !important; }
+.gradio-container { max-width: 1400px !important; margin: auto !important; width: 100% !important; }
+.gradio-container > *, .gradio-container .row { width: 100% !important; }
 
 .brand-header {
   text-align: center;
@@ -477,6 +482,43 @@ _CSS = """
   font-size: 0.85em;
   margin-top: 10px;
 }
+/* Tabs — равные по ширине */
+.tabs > div[role="tablist"] > button,
+.tab-nav > button {
+  flex: 1 !important;
+  text-align: center !important;
+}
+.lang-switcher-top {
+  text-align: right; padding: 8px 12px 0 0;
+}
+.brand-box {
+  background: linear-gradient(135deg, #4c1d95 0%, #6d28d9 50%, #7e22ce 100%);
+  padding: 24px 28px;
+  border-radius: 16px;
+  margin: 8px 0 16px 0;
+  box-shadow: 0 10px 30px rgba(109, 40, 217, 0.35);
+  color: white;
+  text-align: center;
+}
+.brand-box h1 { color: white !important; margin: 0 0 8px 0 !important; font-size: 1.9em !important; }
+.brand-box p { color: rgba(255,255,255,0.92) !important; margin: 4px 0 !important; }
+.brand-box a { color: #fbbf24 !important; text-decoration: none !important; font-weight: 600 !important; }
+.brand-box a:hover { text-decoration: underline !important; }
+.lang-switcher {
+  position: absolute; top: 12px; right: 16px;
+  display: flex; gap: 6px;
+}
+.lang-btn {
+  background: rgba(255,255,255,0.18);
+  color: white !important;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 0.82em;
+  text-decoration: none !important;
+  font-weight: 600;
+}
+.lang-btn:hover { background: rgba(255,255,255,0.3); }
+.brand-header { position: relative; }
 
 button.primary {
   background: linear-gradient(135deg, #6d28d9 0%, #7e22ce 100%) !important;
@@ -486,9 +528,9 @@ button.primary {
 }
 """
 
-# === JS: принудительно тёмная тема (одноразовый check на load) ===
+# === JS: принудительно тёмная тема (IIFE — одноразовый редирект с __theme=dark) ===
 _HEAD_JS = """
-function() {
+() => {
   const url = new URL(window.location);
   if (!url.searchParams.has('__theme')) {
     url.searchParams.set('__theme', 'dark');
@@ -497,12 +539,21 @@ function() {
 }
 """
 
-_BRAND_HTML = f"""
+def _brand_html(subtitle: str, credits_label: str) -> str:
+    return f"""
 <div class="brand-header">
-  <div class="brand-title">🎙️ VoxCPM2 — Multilingual TTS (RU/EN)</div>
-  <div class="brand-subtitle">2B параметров · 30 языков · 48 kHz · Voice Design &amp; Cloning</div>
+  <div class="lang-switcher">
+    <a href="?__lang=ru&__theme=dark" class="lang-btn">
+      <img src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f1f7-1f1fa.svg" width="16" height="16" style="vertical-align:-3px;margin-right:4px"/>RU
+    </a>
+    <a href="?__lang=en&__theme=dark" class="lang-btn">
+      <img src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/1f1ec-1f1e7.svg" width="16" height="16" style="vertical-align:-3px;margin-right:4px"/>EN
+    </a>
+  </div>
+  <div class="brand-title">🎙️ VoxCPM2 — Multilingual TTS</div>
+  <div class="brand-subtitle">{subtitle}</div>
   <div class="brand-credits">
-    Портативная сборка:
+    {credits_label}:
     <a href="https://t.me/nerual_dreming" target="_blank">Nerual Dreming</a> ·
     <a href="https://neuro-cartel.com" target="_blank">neuro-cartel.com</a> ·
     <a href="https://t.me/neuroport" target="_blank">Нейро-Софт</a>
@@ -511,44 +562,157 @@ _BRAND_HTML = f"""
 </div>
 """
 
+_BRAND_HTML_RU = _brand_html(
+    "2B параметров · 30 языков · 48 kHz · Voice Design &amp; Cloning",
+    "Портативная сборка",
+)
+_BRAND_HTML_EN = _brand_html(
+    "2B parameters · 30 languages · 48 kHz · Voice Design &amp; Cloning",
+    "Portable build",
+)
+
 
 # === UI Builder ===
-def _seed_row():
+def _seed_row(prefix: str):
     with gr.Row():
-        seed = gr.Number(value=-1, label=I18N("seed_label"), precision=0, scale=3)
-        locked = gr.Checkbox(value=False, label=I18N("lock_label"), scale=1)
+        seed = gr.Number(value=-1, label=I18N("label_seed"), precision=0, scale=3, elem_id=f"{prefix}_seed")
+        locked = gr.Checkbox(value=False, label=I18N("label_lock"), scale=1, elem_id=f"{prefix}_locked")
     return seed, locked
 
 
-def _advanced_block(show_denoise: bool = False):
+def _advanced_block(prefix: str, show_denoise: bool = False):
     """Accordion с расширенными параметрами."""
-    with gr.Accordion(label=I18N("advanced_label"), open=False):
+    with gr.Accordion(label=I18N("label_advanced"), open=False, elem_id=f"{prefix}_advanced"):
         with gr.Row():
-            cfg = gr.Slider(0.5, 5.0, value=2.0, step=0.1, label=I18N("cfg_label"), info=I18N("cfg_info"))
-            steps = gr.Slider(5, 30, value=10, step=1, label=I18N("steps_label"), info=I18N("steps_info"))
-        normalize = gr.Checkbox(value=True, label=I18N("normalize_label"), info=I18N("normalize_info"))
-        retry = gr.Checkbox(value=False, label=I18N("retry_label"), info=I18N("retry_info"))
+            cfg = gr.Slider(0.5, 5.0, value=2.0, step=0.1, label=I18N("label_cfg"), info="Выше = ближе к промпту, ниже = больше креатива", elem_id=f"{prefix}_cfg")
+            steps = gr.Slider(5, 30, value=10, step=1, label=I18N("label_steps"), info="Больше = качественнее, но медленнее (5-10 для скорости)", elem_id=f"{prefix}_steps")
+        normalize = gr.Checkbox(value=True, label=I18N("label_normalize"), info="Обработка чисел, дат, сокращений", elem_id=f"{prefix}_normalize")
+        retry = gr.Checkbox(value=False, label=I18N("label_retry"), info="Перегенерировать если качество плохое", elem_id=f"{prefix}_retry")
         denoise = None
         if show_denoise:
-            denoise = gr.Checkbox(value=False, label=I18N("denoise_label"), info=I18N("denoise_info"))
+            denoise = gr.Checkbox(value=False, label=I18N("label_denoise"), info="ZipEnhancer денойзинг референс-аудио", elem_id=f"{prefix}_denoise")
     return cfg, steps, normalize, retry, denoise
 
 
+# === i18n — официальный паттерн Gradio 6 ===
+# https://gradio.app/guides/internationalization
+I18N = gr.I18n(
+    en={
+        "tab_tts": "Text-to-Speech",
+        "tab_design": "Voice Design",
+        "tab_clone": "Voice Cloning",
+        "tab_ultimate": "Ultimate Cloning",
+        "tts_instructions": "Enter any text, 30 languages supported.",
+        "design_instructions": "Create a voice from a text description — no reference needed.",
+        "clone_instructions": "Upload a reference or pick from the pack. Transcript is optional.",
+        "ultimate_instructions": "Maximum fidelity — audio + transcript required.",
+        "label_text": "Text",
+        "label_description": "Voice description",
+        "label_content": "Text to speak",
+        "label_reference": "Reference audio",
+        "label_transcript": "Reference transcript",
+        "label_style": "Style (optional)",
+        "label_preset": "Voice preset",
+        "label_cfg": "CFG Scale",
+        "label_steps": "Inference Steps",
+        "label_seed": "Seed",
+        "label_lock": "Lock Seed",
+        "label_advanced": "Advanced settings",
+        "label_normalize": "Text normalization (wetext)",
+        "label_denoise": "Denoise reference",
+        "label_retry": "Retry on bad case",
+        "label_output": "Generated audio",
+        "btn_tts": "Synthesize",
+        "btn_design": "Design Voice",
+        "btn_clone": "Clone Voice",
+        "btn_ultimate": "Ultimate Clone",
+        "btn_refresh": "Refresh list",
+        "btn_load_cloud": "Load list",
+        "btn_download": "Download selected",
+        "accordion_cloud": "Download voices from server",
+        "cloud_status_initial": "Click 'Load list' to fetch available voices",
+        "cloud_voices_label": "Available voices",
+        "download_status_label": "Download result",
+        "brand_header_html": _BRAND_HTML_EN,
+    },
+    ru={
+        "tab_tts": "Текст в речь",
+        "tab_design": "Дизайн голоса",
+        "tab_clone": "Клонирование",
+        "tab_ultimate": "Ultimate-клонирование",
+        "tts_instructions": "Введите любой текст, поддерживается 30 языков.",
+        "design_instructions": "Создайте голос из текстового описания — без референса.",
+        "clone_instructions": "Загрузите референс или выберите из пака. Транскрипт опционален.",
+        "ultimate_instructions": "Максимальная верность — аудио + транскрипт обязательны.",
+        "label_text": "Текст",
+        "label_description": "Описание голоса",
+        "label_content": "Текст для озвучки",
+        "label_reference": "Референс-аудио",
+        "label_transcript": "Транскрипт референса",
+        "label_style": "Стиль (опционально)",
+        "label_preset": "Пресет голоса",
+        "label_cfg": "CFG Scale",
+        "label_steps": "Шаги диффузии",
+        "label_seed": "Seed",
+        "label_lock": "Зафиксировать Seed",
+        "label_advanced": "Расширенные настройки",
+        "label_normalize": "Нормализация текста (wetext)",
+        "label_denoise": "Шумоподавление референса",
+        "label_retry": "Повтор при плохой генерации",
+        "label_output": "Результат",
+        "btn_tts": "Синтезировать",
+        "btn_design": "Создать голос",
+        "btn_clone": "Клонировать",
+        "btn_ultimate": "Ultimate-клонировать",
+        "btn_refresh": "Обновить список",
+        "btn_load_cloud": "Загрузить список",
+        "btn_download": "Скачать выбранные",
+        "accordion_cloud": "Скачать голоса с сервера",
+        "cloud_status_initial": "Нажмите 'Загрузить список' для получения доступных голосов",
+        "cloud_voices_label": "Доступные голоса",
+        "download_status_label": "Результат загрузки",
+        "brand_header_html": _BRAND_HTML_RU,
+    },
+)
+
+
+_HEAD_SCRIPT = """
+<script>
+(function(){
+  try {
+    var u = new URL(window.location);
+    var lang = u.searchParams.get('__lang');
+    if (lang) {
+      Object.defineProperty(navigator, 'language', {value: lang, configurable: true});
+      Object.defineProperty(navigator, 'languages', {value: [lang], configurable: true});
+    }
+  } catch(e) {}
+})();
+</script>
+"""
+
+
 def build_ui():
-    with gr.Blocks() as demo:
-        gr.HTML(_BRAND_HTML)
+    with gr.Blocks(
+        title="VoxCPM2 — Multilingual TTS",
+        theme=gr.themes.Soft(primary_hue="purple"),
+        css=_CSS,
+        head=_HEAD_SCRIPT,
+        delete_cache=(300, 3600),
+    ) as demo:
+        gr.HTML(I18N("brand_header_html"))
 
         # === Таб 1: TTS ===
         with gr.Tab(label=I18N("tab_tts")):
             gr.Markdown(I18N("tts_instructions"))
-            with gr.Row():
-                with gr.Column(scale=3):
-                    tts_text = gr.Textbox(label=I18N("text_label"), placeholder=I18N("text_placeholder"), lines=4)
-                    tts_cfg, tts_steps, tts_norm, tts_retry, _ = _advanced_block(show_denoise=False)
-                    tts_seed, tts_locked = _seed_row()
-                    tts_btn = gr.Button(I18N("generate_tts"), variant="primary", size="lg")
-                with gr.Column(scale=2):
-                    tts_out = gr.Audio(label=I18N("output_label"), type="filepath")
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1):
+                    tts_text = gr.Textbox(label=I18N("label_text"), placeholder="Введите текст на любом из 30 поддерживаемых языков...", lines=4)
+                    tts_cfg, tts_steps, tts_norm, tts_retry, _ = _advanced_block("tts", show_denoise=False)
+                    tts_seed, tts_locked = _seed_row("tts")
+                    tts_btn = gr.Button(I18N("btn_tts"), variant="primary", size="lg")
+                with gr.Column(scale=1):
+                    tts_out = gr.Audio(label=I18N("label_output"), type="filepath")
             gr.Examples(examples=TTS_EXAMPLES, inputs=[tts_text], label="Примеры / Examples", examples_per_page=10)
             tts_btn.click(
                 tts_generate,
@@ -559,15 +723,15 @@ def build_ui():
         # === Таб 2: Voice Design ===
         with gr.Tab(label=I18N("tab_design")):
             gr.Markdown(I18N("design_instructions"))
-            with gr.Row():
-                with gr.Column(scale=3):
-                    vd_desc = gr.Textbox(label=I18N("description_label"), placeholder=I18N("description_placeholder"), lines=2)
-                    vd_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
-                    vd_cfg, vd_steps, vd_norm, vd_retry, _ = _advanced_block(show_denoise=False)
-                    vd_seed, vd_locked = _seed_row()
-                    vd_btn = gr.Button(I18N("generate_design"), variant="primary", size="lg")
-                with gr.Column(scale=2):
-                    vd_out = gr.Audio(label=I18N("output_label"), type="filepath")
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1):
+                    vd_desc = gr.Textbox(label=I18N("label_description"), placeholder="например: Молодая женщина, нежный и мягкий голос", lines=2)
+                    vd_text = gr.Textbox(label=I18N("label_content"), placeholder="Привет, добро пожаловать в VoxCPM2!", lines=3)
+                    vd_cfg, vd_steps, vd_norm, vd_retry, _ = _advanced_block("vd", show_denoise=False)
+                    vd_seed, vd_locked = _seed_row("vd")
+                    vd_btn = gr.Button(I18N("btn_design"), variant="primary", size="lg")
+                with gr.Column(scale=1):
+                    vd_out = gr.Audio(label=I18N("label_output"), type="filepath")
             # Voice Design examples — кнопки, заполняющие оба поля (gr.Examples не резолвит gr.I18n в заголовках)
             gr.Markdown("**Примеры описаний голоса / Voice design examples** (кликни, чтобы подставить):")
             with gr.Row():
@@ -584,124 +748,159 @@ def build_ui():
                 outputs=[vd_out, vd_seed],
             )
 
+        _initial_voices = scan_local_voices()
+        # Limit to first 50 — Gradio 6 Dropdown has reactive issues with very large lists
+        _voice_choices = ["-- Свой файл --"] + _initial_voices[:50]
+
         # === Таб 3: Voice Cloning ===
         with gr.Tab(label=I18N("tab_clone")):
             gr.Markdown(I18N("clone_instructions"))
-            with gr.Row():
-                with gr.Column(scale=3):
-                    # Пак голосов — Slait/russia_voices (743 русских голоса)
-                    with gr.Accordion("📦 Пак русских голосов (Slait/russia_voices)", open=False):
-                        with gr.Row():
-                            vc_voice_pick = gr.Dropdown(
-                                label="Выбрать голос из локального пака",
-                                choices=scan_local_voices(),
-                                value=None,
-                                interactive=True,
-                                filterable=True,
-                                scale=3,
-                            )
-                            vc_refresh_btn = gr.Button("🔄 Обновить", size="sm", scale=1)
-                        with gr.Row():
-                            vc_download_btn = gr.Button("📥 Скачать все 743 голоса (~1.5 GB)", size="sm", scale=3)
-                            vc_pack_status = gr.Textbox(label="Статус", interactive=False, scale=2)
-                    vc_ref = gr.Audio(label=I18N("reference_label"), type="filepath", sources=["upload", "microphone"])
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1):
+                    vc_voice_pick = gr.Dropdown(
+                        label=I18N("label_preset"),
+                        choices=_voice_choices,
+                        value="-- Свой файл --",
+                        interactive=True,
+                        elem_id="vc_voice_pick",
+                    )
+                    vc_refresh_btn = gr.Button(I18N("btn_refresh"), size="sm", elem_id="vc_refresh_btn")
+                    vc_ref = gr.Audio(
+                        label=I18N("label_reference"),
+                        type="numpy",
+                        sources=["upload", "microphone"],
+                        elem_id="vc_ref",
+                    )
                     vc_transcript = gr.Textbox(
-                        label="Транскрипт референса (опционально — для макс. качества, автозаполняется из пака)",
+                        label=I18N("label_transcript"),
                         placeholder="Точный текст того что говорится в референс-аудио",
                         lines=2,
+                        elem_id="vc_transcript",
                     )
-                    vc_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
-                    vc_style = gr.Dropdown(
-                        label=I18N("style_label"),
-                        choices=CLONE_STYLE_EXAMPLES,
-                        value="",
-                        allow_custom_value=True,
-                        filterable=True,
+                    vc_text = gr.Textbox(label=I18N("label_content"), placeholder="Привет, добро пожаловать в VoxCPM2!", lines=3, elem_id="vc_text")
+                    vc_style = gr.Textbox(
+                        label=I18N("label_style"),
+                        placeholder="например: чуть быстрее, бодрым тоном",
+                        lines=1,
+                        elem_id="vc_style",
                     )
-                    vc_cfg, vc_steps, vc_norm, vc_retry, vc_denoise = _advanced_block(show_denoise=True)
-                    vc_seed, vc_locked = _seed_row()
-                    vc_btn = gr.Button(I18N("generate_clone"), variant="primary", size="lg")
-                with gr.Column(scale=2):
-                    vc_out = gr.Audio(label=I18N("output_label"), type="filepath")
+                    vc_cfg, vc_steps, vc_norm, vc_retry, vc_denoise = _advanced_block("vc", show_denoise=True)
+                    vc_seed, vc_locked = _seed_row("vc")
+                    vc_btn = gr.Button(I18N("btn_clone"), variant="primary", size="lg", elem_id="vc_btn")
+                with gr.Column(scale=1):
+                    vc_out = gr.Audio(label=I18N("label_output"), type="filepath", elem_id="vc_out")
+                    with gr.Accordion(I18N("accordion_cloud"), open=False, elem_id="vc_download_accordion"):
+                        gr.Markdown(f"*Репозиторий: `{CLOUD_VOICES_REPO}`*")
+                        vc_cloud_status = gr.Textbox(
+                            label="Статус",
+                            interactive=False,
+                            value=I18N("cloud_status_initial"),
+                            elem_id="vc_cloud_status",
+                        )
+                        vc_load_cloud_btn = gr.Button(I18N("btn_load_cloud"), variant="secondary", elem_id="vc_load_cloud_btn")
+                        vc_cloud_voices = gr.CheckboxGroup(
+                            label=I18N("cloud_voices_label"),
+                            choices=[],
+                            interactive=True,
+                            elem_id="vc_cloud_voices",
+                        )
+                        vc_download_btn = gr.Button(I18N("btn_download"), variant="primary", elem_id="vc_download_btn")
+                        vc_download_status = gr.Textbox(label=I18N("download_status_label"), interactive=False, elem_id="vc_download_status")
+
             vc_btn.click(
                 voice_clone,
                 inputs=[vc_text, vc_ref, vc_style, vc_transcript, vc_cfg, vc_steps, vc_seed, vc_locked, vc_norm, vc_denoise, vc_retry],
                 outputs=[vc_out, vc_seed],
             )
-            # Voice pack handlers (Voice Cloning) — заполняет И аудио, И транскрипт из пака
-            vc_voice_pick.change(
-                fn=lambda n: (voice_audio_path(n) if n else None, voice_transcript(n) if n else ""),
-                inputs=[vc_voice_pick],
-                outputs=[vc_ref, vc_transcript],
-            )
-            vc_refresh_btn.click(
-                fn=lambda: gr.update(choices=scan_local_voices()),
-                inputs=[],
-                outputs=[vc_voice_pick],
-            )
-            vc_download_btn.click(
-                fn=download_all_cloud_voices,
-                inputs=[],
-                outputs=[vc_pack_status],
-            ).then(
-                fn=lambda: gr.update(choices=scan_local_voices()),
-                inputs=[],
-                outputs=[vc_voice_pick],
-            )
+
+            def _vc_load_preset(name):
+                if not name or name == "-- Свой файл --":
+                    return None, ""
+                path = voice_audio_path(name)
+                if not path:
+                    return None, ""
+                wav, sr = sf.read(path)
+                return (sr, wav), voice_transcript(name)
+
+            def _vc_refresh():
+                return gr.update(choices=["-- Свой файл --"] + scan_local_voices())
+
+            vc_voice_pick.change(_vc_load_preset, inputs=[vc_voice_pick], outputs=[vc_ref, vc_transcript])
+            vc_refresh_btn.click(_vc_refresh, outputs=[vc_voice_pick])
+            vc_load_cloud_btn.click(load_cloud_list, outputs=[vc_cloud_status, vc_cloud_voices])
+            vc_download_btn.click(download_selected_voices, inputs=[vc_cloud_voices], outputs=[vc_download_status, vc_voice_pick])
 
         # === Таб 4: Ultimate Cloning ===
         with gr.Tab(label=I18N("tab_ultimate")):
             gr.Markdown(I18N("ultimate_instructions"))
-            with gr.Row():
-                with gr.Column(scale=3):
-                    # Пак голосов с автозаполнением транскрипта
-                    with gr.Accordion("📦 Пак русских голосов (Slait/russia_voices)", open=False):
-                        with gr.Row():
-                            uc_voice_pick = gr.Dropdown(
-                                label="Выбрать голос из локального пака (автозаполнение транскрипта)",
-                                choices=scan_local_voices(),
-                                value=None,
-                                interactive=True,
-                                filterable=True,
-                                scale=3,
-                            )
-                            uc_refresh_btn = gr.Button("🔄 Обновить", size="sm", scale=1)
-                        with gr.Row():
-                            uc_download_btn = gr.Button("📥 Скачать все 743 голоса (~1.5 GB)", size="sm", scale=3)
-                            uc_pack_status = gr.Textbox(label="Статус", interactive=False, scale=2)
-                    uc_ref = gr.Audio(label=I18N("reference_label"), type="filepath", sources=["upload", "microphone"])
-                    uc_transcript = gr.Textbox(label=I18N("transcript_label"), placeholder=I18N("transcript_placeholder"), lines=2)
-                    uc_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
-                    uc_cfg, uc_steps, uc_norm, uc_retry, uc_denoise = _advanced_block(show_denoise=True)
-                    uc_seed, uc_locked = _seed_row()
-                    uc_btn = gr.Button(I18N("generate_ultimate"), variant="primary", size="lg")
-                with gr.Column(scale=2):
-                    uc_out = gr.Audio(label=I18N("output_label"), type="filepath")
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=1):
+                    uc_voice_pick = gr.Dropdown(
+                        label=I18N("label_preset"),
+                        choices=_voice_choices,
+                        value="-- Свой файл --",
+                        interactive=True,
+                        elem_id="uc_voice_pick",
+                    )
+                    uc_refresh_btn = gr.Button(I18N("btn_refresh"), size="sm", elem_id="uc_refresh_btn")
+                    uc_ref = gr.Audio(
+                        label=I18N("label_reference"),
+                        type="numpy",
+                        sources=["upload", "microphone"],
+                        elem_id="uc_ref",
+                    )
+                    uc_transcript = gr.Textbox(
+                        label=I18N("label_transcript"),
+                        placeholder="Точный текст того что говорится в референсе",
+                        lines=2,
+                        elem_id="uc_transcript",
+                    )
+                    uc_text = gr.Textbox(label=I18N("label_content"), placeholder="Привет, добро пожаловать в VoxCPM2!", lines=3, elem_id="uc_text")
+                    uc_cfg, uc_steps, uc_norm, uc_retry, uc_denoise = _advanced_block("uc", show_denoise=True)
+                    uc_seed, uc_locked = _seed_row("uc")
+                    uc_btn = gr.Button(I18N("btn_ultimate"), variant="primary", size="lg", elem_id="uc_btn")
+                with gr.Column(scale=1):
+                    uc_out = gr.Audio(label=I18N("label_output"), type="filepath", elem_id="uc_out")
+                    with gr.Accordion(I18N("accordion_cloud"), open=False, elem_id="uc_download_accordion"):
+                        gr.Markdown(f"*Репозиторий: `{CLOUD_VOICES_REPO}`*")
+                        uc_cloud_status = gr.Textbox(
+                            label="Статус",
+                            interactive=False,
+                            value=I18N("cloud_status_initial"),
+                            elem_id="uc_cloud_status",
+                        )
+                        uc_load_cloud_btn = gr.Button(I18N("btn_load_cloud"), variant="secondary", elem_id="uc_load_cloud_btn")
+                        uc_cloud_voices = gr.CheckboxGroup(
+                            label=I18N("cloud_voices_label"),
+                            choices=[],
+                            interactive=True,
+                            elem_id="uc_cloud_voices",
+                        )
+                        uc_download_btn = gr.Button(I18N("btn_download"), variant="primary", elem_id="uc_download_btn")
+                        uc_download_status = gr.Textbox(label=I18N("download_status_label"), interactive=False, elem_id="uc_download_status")
+
             uc_btn.click(
                 ultimate_clone,
                 inputs=[uc_text, uc_ref, uc_transcript, uc_cfg, uc_steps, uc_seed, uc_locked, uc_norm, uc_denoise, uc_retry],
                 outputs=[uc_out, uc_seed],
             )
-            # Voice pack handlers (Ultimate Cloning — заполняет И аудио, И транскрипт)
-            uc_voice_pick.change(
-                fn=lambda n: (voice_audio_path(n) if n else None, voice_transcript(n) if n else ""),
-                inputs=[uc_voice_pick],
-                outputs=[uc_ref, uc_transcript],
-            )
-            uc_refresh_btn.click(
-                fn=lambda: gr.update(choices=scan_local_voices()),
-                inputs=[],
-                outputs=[uc_voice_pick],
-            )
-            uc_download_btn.click(
-                fn=download_all_cloud_voices,
-                inputs=[],
-                outputs=[uc_pack_status],
-            ).then(
-                fn=lambda: gr.update(choices=scan_local_voices()),
-                inputs=[],
-                outputs=[uc_voice_pick],
-            )
+
+            def _uc_load_preset(name):
+                if not name or name == "-- Свой файл --":
+                    return None, ""
+                path = voice_audio_path(name)
+                if not path:
+                    return None, ""
+                wav, sr = sf.read(path)
+                return (sr, wav), voice_transcript(name)
+
+            def _uc_refresh():
+                return gr.update(choices=["-- Свой файл --"] + scan_local_voices())
+
+            uc_voice_pick.change(_uc_load_preset, inputs=[uc_voice_pick], outputs=[uc_ref, uc_transcript])
+            uc_refresh_btn.click(_uc_refresh, outputs=[uc_voice_pick])
+            uc_load_cloud_btn.click(load_cloud_list, outputs=[uc_cloud_status, uc_cloud_voices])
+            uc_download_btn.click(download_selected_voices, inputs=[uc_cloud_voices], outputs=[uc_download_status, uc_voice_pick])
 
     return demo
 
@@ -709,12 +908,9 @@ def build_ui():
 # === Точка входа ===
 if __name__ == "__main__":
     demo = build_ui()
-    demo.queue(max_size=10, default_concurrency_limit=1).launch(
+    demo.queue(default_concurrency_limit=1).launch(
         server_port=None,
         inbrowser=True,
         i18n=I18N,
-        theme=gr.themes.Soft(primary_hue="purple"),
-        css=_CSS,
-        js=_HEAD_JS,
         show_error=True,
     )
