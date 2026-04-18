@@ -809,8 +809,14 @@ button.primary {
   font-weight: 600 !important;
   border-radius: 10px !important;
 }
-.lora-refresh-btn { max-width: 44px !important; flex: 0 0 44px !important; }
-.lora-refresh-btn button { padding: 6px !important; min-width: 0 !important; }
+.lora-refresh-btn {
+  max-width: 44px !important; flex: 0 0 44px !important;
+  align-self: flex-end !important;
+}
+.lora-refresh-btn button {
+  padding: 0 !important; min-width: 0 !important;
+  height: 44px !important; max-height: 44px !important;
+}
 """
 
 # === JS: принудительно тёмная тема (IIFE — одноразовый редирект с __theme=dark) ===
@@ -870,7 +876,7 @@ def _advanced_block(prefix: str, show_denoise: bool = False):
     with gr.Accordion(label=I18N("label_advanced"), open=False, elem_id=f"{prefix}_advanced"):
         _NONE = "-- Без LoRA --"
         _choices = [_NONE] + scan_local_loras()
-        with gr.Row(equal_height=True):
+        with gr.Row(equal_height=False):
             lora_sel = gr.Dropdown(
                 label="🧬 LoRA", choices=_choices,
                 value=(_ACTIVE_LORA if _ACTIVE_LORA in _choices else _NONE),
