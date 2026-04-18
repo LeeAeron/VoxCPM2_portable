@@ -872,10 +872,14 @@ def _advanced_block(prefix: str, show_denoise: bool = False):
             return gr.update(visible=True), gr.update(choices=scan_local_loras() or ["(пусто — обучи в табе LoRA)"])
 
         use_lora.change(_toggle_lora, inputs=[use_lora, lora_sel], outputs=[lora_row, lora_sel])
-        lora_sel.change(
-            fn=lambda n: lora_attach(n) if n and n != "(пусто — обучи в табе LoRA)" else None,
-            inputs=[lora_sel],
-        )
+
+        def _on_lora_pick(n):
+            if n and n != "(пусто — обучи в табе LoRA)":
+                lora_attach(n)
+            # no output update — avoid feedback loop
+            return
+
+        lora_sel.change(_on_lora_pick, inputs=[lora_sel], outputs=[], show_progress="hidden")
         lora_refresh.click(
             fn=lambda: gr.update(choices=scan_local_loras() or ["(пусто — обучи в табе LoRA)"]),
             outputs=[lora_sel],
