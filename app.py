@@ -263,7 +263,9 @@ def voice_design(description, text, cfg, steps, seed, locked, normalize, retry):
         raise gr.Error(f"Ошибка генерации / Generation error: {e}") from e
 
 
-def voice_clone(text, ref_audio, style, cfg, steps, seed, locked, normalize, denoise, retry):
+def voice_clone(text, ref_audio, style, transcript, cfg, steps, seed, locked, normalize, denoise, retry):
+    """Voice Cloning. Если transcript заполнен — автоматически используется Ultimate-режим
+    (prompt_wav_path + prompt_text), иначе обычный reference-only."""
     if not (text or "").strip():
         raise gr.Error("Введите текст / Please enter text.")
     if not ref_audio:
@@ -274,11 +276,23 @@ def voice_clone(text, ref_audio, style, cfg, steps, seed, locked, normalize, den
         if style and style.strip():
             final_text = f"({style.strip()}){final_text}"
         used_seed = _resolve_seed(seed, locked)
-        kwargs = _build_kwargs(
-            text=final_text, cfg=cfg, steps=steps,
-            normalize=normalize, retry=retry,
-            reference_wav_path=ref_audio, denoise=denoise,
-        )
+
+        transcript_clean = (transcript or "").strip()
+        if transcript_clean:
+            # Ultimate-режим: prompt_wav + prompt_text + reference
+            kwargs = _build_kwargs(
+                text=final_text, cfg=cfg, steps=steps,
+                normalize=normalize, retry=retry,
+                prompt_wav_path=ref_audio, prompt_text=transcript_clean,
+                reference_wav_path=ref_audio, denoise=denoise,
+            )
+        else:
+            # Обычный reference-режим
+            kwargs = _build_kwargs(
+                text=final_text, cfg=cfg, steps=steps,
+                normalize=normalize, retry=retry,
+                reference_wav_path=ref_audio, denoise=denoise,
+            )
         wav = _collect_audio(model.generate(**kwargs))
         return _save_wav(wav, model.tts_model.sample_rate, "clone"), used_seed
     except gr.Error:
@@ -591,6 +605,11 @@ def build_ui():
                             vc_download_btn = gr.Button("📥 Скачать все 743 голоса (~1.5 GB)", size="sm", scale=3)
                             vc_pack_status = gr.Textbox(label="Статус", interactive=False, scale=2)
                     vc_ref = gr.Audio(label=I18N("reference_label"), type="filepath", sources=["upload", "microphone"])
+                    vc_transcript = gr.Textbox(
+                        label="Транскрипт референса (опционально — для макс. качества, автозаполняется из пака)",
+                        placeholder="Точный текст того что говорится в референс-аудио",
+                        lines=2,
+                    )
                     vc_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
                     vc_style = gr.Dropdown(
                         label=I18N("style_label"),
@@ -606,14 +625,14 @@ def build_ui():
                     vc_out = gr.Audio(label=I18N("output_label"), type="filepath")
             vc_btn.click(
                 voice_clone,
-                inputs=[vc_text, vc_ref, vc_style, vc_cfg, vc_steps, vc_seed, vc_locked, vc_norm, vc_denoise, vc_retry],
+                inputs=[vc_text, vc_ref, vc_style, vc_transcript, vc_cfg, vc_steps, vc_seed, vc_locked, vc_norm, vc_denoise, vc_retry],
                 outputs=[vc_out, vc_seed],
             )
-            # Voice pack handlers (Voice Cloning)
+            # Voice pack handlers (Voice Cloning) — заполняет И аудио, И транскрипт из пака
             vc_voice_pick.change(
-                fn=lambda n: (voice_audio_path(n) if n else None),
+                fn=lambda n: (voice_audio_path(n) if n else None, voice_transcript(n) if n else ""),
                 inputs=[vc_voice_pick],
-                outputs=[vc_ref],
+                outputs=[vc_ref, vc_transcript],
             )
             vc_refresh_btn.click(
                 fn=lambda: gr.update(choices=scan_local_voices()),
