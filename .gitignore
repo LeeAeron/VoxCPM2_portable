@@ -5,6 +5,7 @@ temp/
 output/
 downloads/
 ffmpeg/
+voices/
 cuda_version.txt
 
 __pycache__/

@@ -138,6 +138,41 @@ python\python.exe -m pip install torch==%TORCH_VERSION% torchaudio==%TORCHAUDIO_
 echo [5/6] Установка зависимостей VoxCPM2...
 python\python.exe -m pip install -r requirements.txt --no-warn-script-location
 
+REM === Triton для Windows (torch.compile + кастомные kernel'ы) ===
+REM Поддержка: все NVIDIA GPU (Pascal+), пропускаем на CPU
+if not "%CUDA_VERSION%"=="cpu" (
+    echo Установка Triton для Windows...
+    python\python.exe -m pip install "triton-windows>=3.0.0,<3.4" --no-warn-script-location
+
+    REM Python headers нужны Triton'у для компиляции launcher'а (embedded Python их не содержит)
+    if not exist "python\Include\Python.h" (
+        echo Установка Python headers для Triton...
+        for /f "tokens=*" %%v in ('python\python.exe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"') do set "PY_VER=%%v"
+        powershell -Command "& {[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/!PY_VER!/amd64/dev.msi' -OutFile 'downloads\pydev.msi'}"
+        if exist "downloads\pydev.msi" (
+            msiexec /a "downloads\pydev.msi" /qn TARGETDIR="%SCRIPT_DIR%downloads\pydev_extract"
+            if not exist "python\Include" mkdir "python\Include"
+            if not exist "python\libs" mkdir "python\libs"
+            xcopy /E /Y "downloads\pydev_extract\include\*" "python\Include\" >nul 2>&1
+            xcopy /E /Y "downloads\pydev_extract\libs\*" "python\libs\" >nul 2>&1
+            if exist "downloads\pydev_extract" rmdir /s /q "downloads\pydev_extract"
+            echo Python headers установлены
+        )
+    )
+)
+
+REM === xformers (memory_efficient_attention) ===
+REM Поддержка: все NVIDIA GPU, пропускаем на CPU
+if not "%CUDA_VERSION%"=="cpu" (
+    echo Установка xformers...
+    python\python.exe -m pip install xformers --no-warn-script-location
+    if errorlevel 1 (
+        echo Не удалось установить xformers. Приложение будет работать без него.
+    ) else (
+        echo xformers установлен успешно
+    )
+)
+
 echo [5.5/6] Установка Flash Attention 2 (опционально)...
 echo.
 echo Flash Attention 2 ускоряет генерацию в 2-3 раза!
@@ -183,6 +218,27 @@ if "%GPU_CHOICE%"=="6" (
 )
 
 echo.
+
+echo [5.9/6] Загрузка голосового пакета по умолчанию...
+if not exist "voices" mkdir voices
+if exist "voices\*.mp3" (
+    echo Голоса уже установлены, пропускаем...
+) else (
+    echo Загрузка voice-pack.zip из HuggingFace...
+    curl -L -o downloads\voice-pack.zip https://huggingface.co/datasets/nerualdreming/VibeVoice/resolve/main/voice-pack.zip
+    if exist "downloads\voice-pack.zip" (
+        echo Распаковка голосового пакета...
+        powershell -Command "Expand-Archive -Path 'downloads\voice-pack.zip' -DestinationPath 'downloads' -Force"
+        if exist "downloads\voice-pack" (
+            xcopy /E /Y /Q downloads\voice-pack\* voices\
+            rmdir /S /Q downloads\voice-pack
+            echo Голосовой пакет установлен!
+        )
+    ) else (
+        echo ПРЕДУПРЕЖДЕНИЕ: не удалось скачать голосовой пакет.
+        echo Можно скачать позже из UI - кнопка "Скачать все 743 голоса".
+    )
+)
 
 echo [6/7] Установка портативного FFmpeg...
 if exist "ffmpeg\ffmpeg.exe" (

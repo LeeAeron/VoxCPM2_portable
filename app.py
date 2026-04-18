@@ -31,9 +31,103 @@ from voxcpm import VoxCPM
 # === Конфигурация ===
 SCRIPT_DIR = Path(__file__).parent.absolute()
 OUTPUT_DIR = SCRIPT_DIR / "output"
+VOICES_DIR = SCRIPT_DIR / "voices"
 OUTPUT_DIR.mkdir(exist_ok=True)
+VOICES_DIR.mkdir(exist_ok=True)
 
 MODEL_REF = "openbmb/VoxCPM2"
+
+# === Voice pack (русские голоса с HuggingFace) ===
+CLOUD_VOICES_REPO = "Slait/russia_voices"
+CLOUD_VOICES_BASE_URL = "https://huggingface.co/datasets/Slait/russia_voices/resolve/main"
+_CLOUD_VOICES_CACHE: list[str] = []
+
+
+def scan_local_voices() -> list[str]:
+    """Список локальных голосов в voices/ (.mp3/.wav/.flac)."""
+    exts = {".mp3", ".wav", ".flac", ".m4a", ".ogg"}
+    names = set()
+    for p in VOICES_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in exts:
+            names.add(p.stem)
+    return sorted(names)
+
+
+def voice_audio_path(name: str) -> Optional[str]:
+    """Путь к аудиофайлу голоса в voices/ (любое расширение из поддерживаемых)."""
+    for ext in (".mp3", ".wav", ".flac", ".m4a", ".ogg"):
+        p = VOICES_DIR / f"{name}{ext}"
+        if p.exists():
+            return str(p)
+    return None
+
+
+def voice_transcript(name: str) -> str:
+    """Транскрипт голоса из voices/{name}.txt, если есть."""
+    p = VOICES_DIR / f"{name}.txt"
+    if p.exists():
+        try:
+            return p.read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def fetch_cloud_voices_list() -> list[str]:
+    """Получить список mp3-голосов из HF dataset."""
+    global _CLOUD_VOICES_CACHE
+    try:
+        from huggingface_hub import list_repo_files
+        files = list(list_repo_files(CLOUD_VOICES_REPO, repo_type="dataset"))
+        voices = sorted(f[:-4] for f in files if f.endswith(".mp3"))
+        _CLOUD_VOICES_CACHE = voices
+        return voices
+    except Exception as exc:
+        print(f"[voices] fetch list error: {exc}")
+        return []
+
+
+def download_cloud_voice(name: str) -> bool:
+    """Скачать один голос (mp3+txt) в voices/."""
+    import requests
+    try:
+        mp3_url = f"{CLOUD_VOICES_BASE_URL}/{name}.mp3?download=true"
+        r = requests.get(mp3_url, timeout=60, stream=True)
+        r.raise_for_status()
+        with open(VOICES_DIR / f"{name}.mp3", "wb") as f:
+            for chunk in r.iter_content(8192):
+                if chunk:
+                    f.write(chunk)
+        # txt необязателен
+        try:
+            txt_url = f"{CLOUD_VOICES_BASE_URL}/{name}.txt?download=true"
+            r2 = requests.get(txt_url, timeout=30)
+            if r2.status_code == 200:
+                (VOICES_DIR / f"{name}.txt").write_text(r2.text, encoding="utf-8")
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        print(f"[voices] download '{name}' error: {exc}")
+        return False
+
+
+def download_all_cloud_voices(progress=gr.Progress()):
+    """Скачать все доступные голоса из HF dataset, с прогрессом."""
+    voices = fetch_cloud_voices_list()
+    if not voices:
+        return "Не удалось получить список голосов с HuggingFace."
+    local = set(scan_local_voices())
+    to_download = [v for v in voices if v not in local]
+    if not to_download:
+        return f"Все {len(voices)} голосов уже скачаны."
+    ok, fail = 0, 0
+    for i, v in enumerate(progress.tqdm(to_download, desc="Скачивание")):
+        if download_cloud_voice(v):
+            ok += 1
+        else:
+            fail += 1
+    return f"Скачано: {ok}, ошибок: {fail}. Всего в voices/: {len(scan_local_voices())}."
 
 # === Определение устройства ===
 def _detect_device() -> tuple[str, str]:
@@ -378,11 +472,11 @@ button.primary {
 }
 """
 
-# === JS: принудительно тёмная тема ===
+# === JS: принудительно тёмная тема (одноразовый check на load) ===
 _HEAD_JS = """
 function() {
   const url = new URL(window.location);
-  if (url.searchParams.get('__theme') !== 'dark') {
+  if (!url.searchParams.has('__theme')) {
     url.searchParams.set('__theme', 'dark');
     window.location.replace(url.toString());
   }
@@ -419,7 +513,7 @@ def _advanced_block(show_denoise: bool = False):
             cfg = gr.Slider(0.5, 5.0, value=2.0, step=0.1, label=I18N("cfg_label"), info=I18N("cfg_info"))
             steps = gr.Slider(5, 30, value=10, step=1, label=I18N("steps_label"), info=I18N("steps_info"))
         normalize = gr.Checkbox(value=True, label=I18N("normalize_label"), info=I18N("normalize_info"))
-        retry = gr.Checkbox(value=True, label=I18N("retry_label"), info=I18N("retry_info"))
+        retry = gr.Checkbox(value=False, label=I18N("retry_label"), info=I18N("retry_info"))
         denoise = None
         if show_denoise:
             denoise = gr.Checkbox(value=False, label=I18N("denoise_label"), info=I18N("denoise_info"))
@@ -427,7 +521,7 @@ def _advanced_block(show_denoise: bool = False):
 
 
 def build_ui():
-    with gr.Blocks(theme=gr.themes.Soft(primary_hue="purple"), css=_CSS, js=_HEAD_JS) as demo:
+    with gr.Blocks() as demo:
         gr.HTML(_BRAND_HTML)
 
         # === Таб 1: TTS ===
@@ -441,7 +535,7 @@ def build_ui():
                     tts_btn = gr.Button(I18N("generate_tts"), variant="primary", size="lg")
                 with gr.Column(scale=2):
                     tts_out = gr.Audio(label=I18N("output_label"), type="filepath")
-            gr.Examples(examples=TTS_EXAMPLES, inputs=[tts_text], label="Примеры / Examples")
+            gr.Examples(examples=TTS_EXAMPLES, inputs=[tts_text], label="Примеры / Examples", examples_per_page=10)
             tts_btn.click(
                 tts_generate,
                 inputs=[tts_text, tts_cfg, tts_steps, tts_seed, tts_locked, tts_norm, tts_retry],
@@ -460,7 +554,16 @@ def build_ui():
                     vd_btn = gr.Button(I18N("generate_design"), variant="primary", size="lg")
                 with gr.Column(scale=2):
                     vd_out = gr.Audio(label=I18N("output_label"), type="filepath")
-            gr.Examples(examples=DESIGN_EXAMPLES, inputs=[vd_desc, vd_text], label="Примеры / Examples")
+            # Voice Design examples — кнопки, заполняющие оба поля (gr.Examples не резолвит gr.I18n в заголовках)
+            gr.Markdown("**Примеры описаний голоса / Voice design examples** (кликни, чтобы подставить):")
+            with gr.Row():
+                for i, (desc, txt) in enumerate(DESIGN_EXAMPLES):
+                    ex_btn = gr.Button(desc[:40] + ("…" if len(desc) > 40 else ""), size="sm")
+                    ex_btn.click(
+                        fn=lambda d=desc, t=txt: (d, t),
+                        inputs=[],
+                        outputs=[vd_desc, vd_text],
+                    )
             vd_btn.click(
                 voice_design,
                 inputs=[vd_desc, vd_text, vd_cfg, vd_steps, vd_seed, vd_locked, vd_norm, vd_retry],
@@ -472,6 +575,21 @@ def build_ui():
             gr.Markdown(I18N("clone_instructions"))
             with gr.Row():
                 with gr.Column(scale=3):
+                    # Пак голосов — Slait/russia_voices (743 русских голоса)
+                    with gr.Accordion("📦 Пак русских голосов (Slait/russia_voices)", open=False):
+                        with gr.Row():
+                            vc_voice_pick = gr.Dropdown(
+                                label="Выбрать голос из локального пака",
+                                choices=scan_local_voices(),
+                                value=None,
+                                interactive=True,
+                                filterable=True,
+                                scale=3,
+                            )
+                            vc_refresh_btn = gr.Button("🔄 Обновить", size="sm", scale=1)
+                        with gr.Row():
+                            vc_download_btn = gr.Button("📥 Скачать все 743 голоса (~1.5 GB)", size="sm", scale=3)
+                            vc_pack_status = gr.Textbox(label="Статус", interactive=False, scale=2)
                     vc_ref = gr.Audio(label=I18N("reference_label"), type="filepath", sources=["upload", "microphone"])
                     vc_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
                     vc_style = gr.Dropdown(
@@ -491,12 +609,47 @@ def build_ui():
                 inputs=[vc_text, vc_ref, vc_style, vc_cfg, vc_steps, vc_seed, vc_locked, vc_norm, vc_denoise, vc_retry],
                 outputs=[vc_out, vc_seed],
             )
+            # Voice pack handlers (Voice Cloning)
+            vc_voice_pick.change(
+                fn=lambda n: (voice_audio_path(n) if n else None),
+                inputs=[vc_voice_pick],
+                outputs=[vc_ref],
+            )
+            vc_refresh_btn.click(
+                fn=lambda: gr.update(choices=scan_local_voices()),
+                inputs=[],
+                outputs=[vc_voice_pick],
+            )
+            vc_download_btn.click(
+                fn=download_all_cloud_voices,
+                inputs=[],
+                outputs=[vc_pack_status],
+            ).then(
+                fn=lambda: gr.update(choices=scan_local_voices()),
+                inputs=[],
+                outputs=[vc_voice_pick],
+            )
 
         # === Таб 4: Ultimate Cloning ===
         with gr.Tab(label=I18N("tab_ultimate")):
             gr.Markdown(I18N("ultimate_instructions"))
             with gr.Row():
                 with gr.Column(scale=3):
+                    # Пак голосов с автозаполнением транскрипта
+                    with gr.Accordion("📦 Пак русских голосов (Slait/russia_voices)", open=False):
+                        with gr.Row():
+                            uc_voice_pick = gr.Dropdown(
+                                label="Выбрать голос из локального пака (автозаполнение транскрипта)",
+                                choices=scan_local_voices(),
+                                value=None,
+                                interactive=True,
+                                filterable=True,
+                                scale=3,
+                            )
+                            uc_refresh_btn = gr.Button("🔄 Обновить", size="sm", scale=1)
+                        with gr.Row():
+                            uc_download_btn = gr.Button("📥 Скачать все 743 голоса (~1.5 GB)", size="sm", scale=3)
+                            uc_pack_status = gr.Textbox(label="Статус", interactive=False, scale=2)
                     uc_ref = gr.Audio(label=I18N("reference_label"), type="filepath", sources=["upload", "microphone"])
                     uc_transcript = gr.Textbox(label=I18N("transcript_label"), placeholder=I18N("transcript_placeholder"), lines=2)
                     uc_text = gr.Textbox(label=I18N("content_label"), placeholder=I18N("content_placeholder"), lines=3)
@@ -510,6 +663,26 @@ def build_ui():
                 inputs=[uc_text, uc_ref, uc_transcript, uc_cfg, uc_steps, uc_seed, uc_locked, uc_norm, uc_denoise, uc_retry],
                 outputs=[uc_out, uc_seed],
             )
+            # Voice pack handlers (Ultimate Cloning — заполняет И аудио, И транскрипт)
+            uc_voice_pick.change(
+                fn=lambda n: (voice_audio_path(n) if n else None, voice_transcript(n) if n else ""),
+                inputs=[uc_voice_pick],
+                outputs=[uc_ref, uc_transcript],
+            )
+            uc_refresh_btn.click(
+                fn=lambda: gr.update(choices=scan_local_voices()),
+                inputs=[],
+                outputs=[uc_voice_pick],
+            )
+            uc_download_btn.click(
+                fn=download_all_cloud_voices,
+                inputs=[],
+                outputs=[uc_pack_status],
+            ).then(
+                fn=lambda: gr.update(choices=scan_local_voices()),
+                inputs=[],
+                outputs=[uc_voice_pick],
+            )
 
     return demo
 
@@ -521,5 +694,8 @@ if __name__ == "__main__":
         server_port=None,
         inbrowser=True,
         i18n=I18N,
+        theme=gr.themes.Soft(primary_hue="purple"),
+        css=_CSS,
+        js=_HEAD_JS,
         show_error=True,
     )
