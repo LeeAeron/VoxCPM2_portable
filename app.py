@@ -1018,10 +1018,9 @@ _HEAD_SCRIPT = """
 
 
 def build_ui():
+    # Gradio 6.10: theme/css passed to launch(), not Blocks()
     with gr.Blocks(
         title="VoxCPM2 — Multilingual TTS",
-        theme=gr.themes.Soft(primary_hue="purple"),
-        css=_CSS,
         head=_HEAD_SCRIPT,
         delete_cache=(300, 3600),
     ) as demo:
@@ -1200,5 +1199,7 @@ if __name__ == "__main__":
         server_port=None,
         inbrowser=True,
         i18n=I18N,
+        theme=gr.themes.Soft(primary_hue="purple"),
+        css=_CSS,
         show_error=True,
     )

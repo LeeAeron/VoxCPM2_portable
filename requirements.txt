@@ -1,6 +1,19 @@
-voxcpm
-gradio==5.50.0==6.10.0
+# Основные зависимости VoxCPM (2.0.2+ для VoxCPM2, требует gradio>=6)
+voxcpm>=2.0
+
+# UI (Gradio 6.11+ имеет баг tabs freeze #13198 — пин на 6.10.0 — последняя стабильная)
+gradio==6.10.0
+
+# Аудио/IO
 soundfile>=0.13.1
 numpy>=1.21.0
-huggingface_hub[hf_xet]
 aiofiles
+
+# HuggingFace (для скачивания модели и voice pack)
+huggingface_hub[hf_xet]
+
+# Для LoRA-тренировки (training/scripts/train_voxcpm_finetune.py)
+argbind
+tensorboardX
+safetensors
+pyyaml
