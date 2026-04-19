@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/hero.png" alt="VoxCPM2 Portable" width="100%"/>
-
 # VoxCPM2 Portable
+
+<img src="docs/hero.png" alt="VoxCPM2 Portable" width="600"/>
 
 **Портативная Windows-сборка VoxCPM2 — мультиязычный TTS с Voice Design, клонированием голоса и end-to-end тренировкой LoRA (видео/аудио → датасет → обучение).**
 
