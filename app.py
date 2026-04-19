@@ -1226,27 +1226,43 @@ def _collect_audio(result) -> np.ndarray:
     return np.concatenate(chunks)
 
 
-def _generate_audio(model, kwargs: dict, streaming: bool, progress) -> np.ndarray:
-    """Единый роутер: streaming → generate_streaming (с прогрессом по чанкам),
-    иначе обычный generate."""
+def _generate_audio_stream(model, kwargs: dict, streaming: bool, progress):
+    """Generator, yield'ит (sample_rate, ndarray) чанки для gr.Audio(streaming=True).
+    streaming=False — один yield целого аудио в конце (для совместимости).
+    streaming=True — yield каждого чанка по мере генерации (live-playback)."""
+    sr = model.tts_model.sample_rate
     if not streaming:
         progress(0, desc="Генерация...")
-        return _collect_audio(model.generate(**kwargs))
-    # streaming mode
-    chunks = []
+        wav = _collect_audio(model.generate(**kwargs))
+        yield sr, wav
+        return
+    # streaming: буферим до ~1 сек (Gradio docs: chunks >1s = плавное воспроизведение)
     gen = model.generate_streaming(**kwargs)
+    buf = []
+    buf_samples = 0
+    min_chunk_samples = int(sr * 1.0)  # 1 sec minimum per yield
+    any_yielded = False
     for i, chunk in enumerate(gen):
         arr = np.asarray(chunk)
         if arr.ndim == 0:
             arr = arr.reshape(1)
-        chunks.append(arr)
+        buf.append(arr)
+        buf_samples += len(arr)
         try:
             progress(min(0.99, i / 120), desc=f"Chunk {i+1}")
         except Exception:
             pass
-    if not chunks:
+        if buf_samples >= min_chunk_samples:
+            yield sr, np.concatenate(buf)
+            any_yielded = True
+            buf = []
+            buf_samples = 0
+    # хвост — всё что осталось в буфере
+    if buf:
+        yield sr, np.concatenate(buf)
+        any_yielded = True
+    if not any_yielded:
         raise gr.Error("Модель не вернула аудио / Model returned no audio.")
-    return np.concatenate(chunks)
 
 
 def _save_wav(wav: np.ndarray, sr: int, prefix: str = "tts", fmt: str = "mp3") -> str:
@@ -1338,8 +1354,15 @@ def tts_generate(text, cfg, steps, fmt, retry_max, retry_ratio, min_len, max_len
             retry_max=retry_max, retry_ratio=retry_ratio,
             min_len=min_len, max_len=max_len,
         )
-        wav = _generate_audio(model, kwargs, bool(streaming), progress)
-        return _save_wav(wav, model.tts_model.sample_rate, "tts", fmt), used_seed
+        chunks_accum = []
+        sr = model.tts_model.sample_rate
+        for sr_i, chunk in _generate_audio_stream(model, kwargs, bool(streaming), progress):
+            sr = sr_i
+            chunks_accum.append(chunk)
+            yield (sr_i, chunk), used_seed
+        # сохраняем архив на диск в output/
+        if chunks_accum:
+            _save_wav(np.concatenate(chunks_accum), sr, "tts", fmt)
     except gr.Error:
         raise
     except Exception as e:
@@ -1362,8 +1385,14 @@ def voice_design(description, text, cfg, steps, fmt, retry_max, retry_ratio, min
             retry_max=retry_max, retry_ratio=retry_ratio,
             min_len=min_len, max_len=max_len,
         )
-        wav = _generate_audio(model, kwargs, bool(streaming), progress)
-        return _save_wav(wav, model.tts_model.sample_rate, "design", fmt), used_seed
+        chunks_accum = []
+        sr = model.tts_model.sample_rate
+        for sr_i, chunk in _generate_audio_stream(model, kwargs, bool(streaming), progress):
+            sr = sr_i
+            chunks_accum.append(chunk)
+            yield (sr_i, chunk), used_seed
+        if chunks_accum:
+            _save_wav(np.concatenate(chunks_accum), sr, "design", fmt)
     except gr.Error:
         raise
     except Exception as e:
@@ -1418,8 +1447,14 @@ def voice_clone(text, ref_audio, style, transcript, cfg, steps, fmt, retry_max, 
                 **common_kwargs,
                 reference_wav_path=ref_audio,
             )
-        wav = _generate_audio(model, kwargs, bool(streaming), progress)
-        return _save_wav(wav, model.tts_model.sample_rate, "clone", fmt), used_seed
+        chunks_accum = []
+        sr = model.tts_model.sample_rate
+        for sr_i, chunk in _generate_audio_stream(model, kwargs, bool(streaming), progress):
+            sr = sr_i
+            chunks_accum.append(chunk)
+            yield (sr_i, chunk), used_seed
+        if chunks_accum:
+            _save_wav(np.concatenate(chunks_accum), sr, "clone", fmt)
     except gr.Error:
         raise
     except Exception as e:
@@ -2095,7 +2130,7 @@ def build_ui():
                     tts_seed, tts_locked = _seed_row("tts")
                     tts_btn = gr.Button(I18N("btn_tts"), variant="primary", size="lg")
                 with gr.Column(scale=1):
-                    tts_out = gr.Audio(label=I18N("label_output"), type="filepath", autoplay=True)
+                    tts_out = gr.Audio(label=I18N("label_output"), type="numpy", streaming=True, autoplay=True)
             gr.Examples(examples=TTS_EXAMPLES, inputs=[tts_text], label=I18N("label_examples"), examples_per_page=10)
             tts_btn.click(
                 tts_generate,
@@ -2114,7 +2149,7 @@ def build_ui():
                     vd_seed, vd_locked = _seed_row("vd")
                     vd_btn = gr.Button(I18N("btn_design"), variant="primary", size="lg")
                 with gr.Column(scale=1):
-                    vd_out = gr.Audio(label=I18N("label_output"), type="filepath", autoplay=True)
+                    vd_out = gr.Audio(label=I18N("label_output"), type="numpy", streaming=True, autoplay=True)
             # Voice Design examples — кнопки, заполняющие оба поля (gr.Examples не резолвит gr.I18n в заголовках)
             gr.Markdown("**Примеры описаний голоса / Voice design examples** (кликни, чтобы подставить):")
             with gr.Row():
@@ -2172,7 +2207,7 @@ def build_ui():
                     vc_seed, vc_locked = _seed_row("vc")
                     vc_btn = gr.Button(I18N("btn_clone"), variant="primary", size="lg", elem_id="vc_btn")
                 with gr.Column(scale=1):
-                    vc_out = gr.Audio(label=I18N("label_output"), type="filepath", autoplay=True, elem_id="vc_out")
+                    vc_out = gr.Audio(label=I18N("label_output"), type="numpy", streaming=True, autoplay=True, elem_id="vc_out")
                     with gr.Accordion(I18N("accordion_cloud"), open=False, elem_id="vc_download_accordion"):
                         gr.Markdown(f"*Репозиторий: `{CLOUD_VOICES_REPO}`*")
                         vc_cloud_status = gr.Textbox(
