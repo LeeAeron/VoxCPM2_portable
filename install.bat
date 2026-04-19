@@ -187,7 +187,7 @@ if "%GPU_CHOICE%"=="3" (
 )
 if "%GPU_CHOICE%"=="4" (
     echo Установка Flash Attention 2 для RTX 40xx ^(Ada Lovelace^)...
-    python\python.exe -m pip install https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.11/flash_attn-2.8.3+cu128torch2.7-cp312-cp312-win_amd64.whl --no-warn-script-location
+    python\python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl --no-warn-script-location
     if errorlevel 1 (
         echo Не удалось установить Flash Attention 2. Приложение будет работать через SDPA.
     ) else (
