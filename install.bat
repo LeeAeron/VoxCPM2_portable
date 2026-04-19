@@ -32,7 +32,7 @@ echo 1. GTX 10xx серия (Pascal) - CUDA 11.8
 echo 2. RTX 20xx серия (Turing) - CUDA 11.8
 echo 3. RTX 30xx серия (Ampere) - CUDA 11.8 (стабильно, без Flash Attention 2)
 echo 4. RTX 40xx серия (Ada Lovelace) - CUDA 12.8 + Flash Attention 2
-echo 5. RTX 50xx серия (Blackwell) - CUDA 12.8 + Flash Attention 2
+echo 5. RTX 50xx серия (Blackwell) - CUDA 12.8 (стабильно, без Flash Attention 2)
 echo 6. CPU only (без GPU, медленнее)
 echo.
 set /p GPU_CHOICE="Введите номер (1-6): "
@@ -195,13 +195,9 @@ if "%GPU_CHOICE%"=="4" (
     )
 )
 if "%GPU_CHOICE%"=="5" (
-    echo Установка Flash Attention 2 для RTX 50xx...
-    python\python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4.post1+cu128torch2.7.0cxx11abiFALSE-cp312-cp312-win_amd64.whl --no-warn-script-location
-    if errorlevel 1 (
-        echo Не удалось установить Flash Attention 2. Приложение будет работать медленнее.
-    ) else (
-        echo Flash Attention 2 установлен успешно!
-    )
+    echo Flash Attention 2 пропущен для RTX 50xx ^(Blackwell SM 12.0^)
+    echo   ^(готовой wheel под sm_120 нет, приложение работает через SDPA^)
+    echo   Для RTX 50xx это не критично — SDPA на Blackwell очень быстр.
 )
 if "%GPU_CHOICE%"=="1" (
     echo Flash Attention 2 не рекомендуется для GTX 10xx
