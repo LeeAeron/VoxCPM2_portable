@@ -15,6 +15,14 @@
 
 </div>
 
+> 🚀 **Кроссплатформенная установка в один клик через Pinokio:**
+> [![Установить через Pinokio](https://img.shields.io/badge/Установить_через-Pinokio-7c3aed?style=flat-square)](https://pinokio.co/item?uri=https://github.com/timoncool/VoxCPM2_portable-pinokio)
+> [![Открыть в Pinokio](https://img.shields.io/badge/Открыть_в-Pinokio-6d28d9?style=flat-square)](https://beta.pinokio.co/apps/github-com-timoncool-voxcpm2-portable-pinokio)
+>
+> Работает на **Windows / Linux (x64 & aarch64) / macOS**. `install.bat` не нужен — Pinokio сам поставит CUDA, Python 3.12, PyTorch, Flash-Attn wheels и FFmpeg.
+>
+> Репозиторий лаунчера: **[timoncool/VoxCPM2_portable-pinokio](https://github.com/timoncool/VoxCPM2_portable-pinokio)**
+
 Синтезируй натуральную речь на 30 языках, создавай уникальные голоса из текстового описания, клонируй любой голос по короткому референсу и **тренируй свою LoRA прямо из видео или аудио-файла** — бросил 8-минутный подкаст в приложение, и оно само нарезает на клипы, транскрибирует, подбирает оптимальные параметры и запускает тренировку. **100% локально**, без облака, без API-ключей. Установка в один клик на Windows, работает на любой NVIDIA GPU с 8+ GB VRAM.
 
 Построен на [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2) от OpenBMB — токенайзер-свободной 2B модели TTS (diffusion autoregressive), обученной на 2M+ часов речи.
