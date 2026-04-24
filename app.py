@@ -2132,7 +2132,7 @@ def build_ui():
         gr.HTML(I18N("brand_header_html"))
 
         # === Таб 1: TTS ===
-        with gr.Tab(label=I18N("tab_tts")):
+        with gr.Tab(label=I18N("tab_tts"), render_children=False):
             gr.Markdown(I18N("tts_instructions"))
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1):
@@ -2157,7 +2157,7 @@ def build_ui():
             )
 
         # === Таб 2: Voice Design ===
-        with gr.Tab(label=I18N("tab_design")):
+        with gr.Tab(label=I18N("tab_design"), render_children=False):
             gr.Markdown(I18N("design_instructions"))
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1):
@@ -2193,7 +2193,7 @@ def build_ui():
         _voice_choices = ["-- Свой файл --"] + _initial_voices[:50]
 
         # === Таб 3: Voice Cloning ===
-        with gr.Tab(label=I18N("tab_clone")):
+        with gr.Tab(label=I18N("tab_clone"), render_children=False):
             gr.Markdown(I18N("clone_instructions"))
             with gr.Row(equal_height=False):
                 with gr.Column(scale=1):
@@ -2276,7 +2276,7 @@ def build_ui():
             vc_download_btn.click(download_selected_voices, inputs=[vc_cloud_voices], outputs=[vc_download_status, vc_voice_pick])
 
         # === Таб 4: Обучение LoRA ===
-        with gr.Tab(label=I18N("tab_lora")):
+        with gr.Tab(label=I18N("tab_lora"), render_children=False):
             lora_name = gr.Textbox(
                 label=I18N("lora_auto_name"),
                 placeholder="my_voice_v1",
@@ -2286,53 +2286,52 @@ def build_ui():
 
             gr.Markdown(I18N("md_step1_title"))
 
-            # Два режима — взаимоисключающие суб-табы
-            with gr.Tabs():
-                # === АВТО из видео/аудио ===
-                with gr.Tab(label=I18N("lora_auto_title")):
-                    gr.Markdown(I18N("lora_auto_desc"))
-                    with gr.Accordion(I18N("lora_auto_how_title"), open=False):
-                        gr.Markdown(I18N("lora_auto_how_desc"))
-                    auto_file = gr.File(
-                        label=I18N("lora_auto_file"),
-                        file_types=[
-                            ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v",
-                            ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus",
-                        ],
-                    )
-                    with gr.Accordion(I18N("lora_auto_params"), open=False):
-                        with gr.Row():
-                            auto_min_sec = gr.Slider(1.0, 5.0, value=2.0, step=0.5, label=I18N("lora_auto_min_sec"), info=I18N("info_auto_min_sec"))
-                            auto_max_sec = gr.Slider(8.0, 20.0, value=15.0, step=1.0, label=I18N("lora_auto_max_sec"), info=I18N("info_auto_max_sec"))
-                        with gr.Row():
-                            auto_target_min = gr.Slider(2.0, 8.0, value=4.0, step=0.5, label=I18N("lora_auto_target_min"), info=I18N("info_auto_target_min"))
-                            auto_target_max = gr.Slider(6.0, 15.0, value=10.0, step=0.5, label=I18N("lora_auto_target_max"), info=I18N("info_auto_target_max"))
+            # Два режима — без вложенных Tabs (зависают), а через Accordion
+            # === АВТО из видео/аудио ===
+            with gr.Accordion(I18N("lora_auto_title"), open=True):
+                gr.Markdown(I18N("lora_auto_desc"))
+                with gr.Accordion(I18N("lora_auto_how_title"), open=False):
+                    gr.Markdown(I18N("lora_auto_how_desc"))
+                auto_file = gr.File(
+                    label=I18N("lora_auto_file"),
+                    file_types=[
+                        ".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v",
+                        ".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus",
+                    ],
+                )
+                with gr.Accordion(I18N("lora_auto_params"), open=False):
                     with gr.Row():
-                        auto_tune_chk = gr.Checkbox(
-                            label=I18N("lora_auto_tune"),
-                            value=True,
-                            info=I18N("info_auto_tune"),
-                        )
-                        auto_start_train = gr.Checkbox(
-                            label=I18N("lora_auto_start_training"),
-                            value=False,
-                        )
-                    auto_btn = gr.Button(I18N("lora_auto_btn"), variant="primary", size="lg")
-                    auto_log = gr.Textbox(label=I18N("lora_auto_log"), interactive=False, lines=18)
+                        auto_min_sec = gr.Slider(1.0, 5.0, value=2.0, step=0.5, label=I18N("lora_auto_min_sec"), info=I18N("info_auto_min_sec"))
+                        auto_max_sec = gr.Slider(8.0, 20.0, value=15.0, step=1.0, label=I18N("lora_auto_max_sec"), info=I18N("info_auto_max_sec"))
+                    with gr.Row():
+                        auto_target_min = gr.Slider(2.0, 8.0, value=4.0, step=0.5, label=I18N("lora_auto_target_min"), info=I18N("info_auto_target_min"))
+                        auto_target_max = gr.Slider(6.0, 15.0, value=10.0, step=0.5, label=I18N("lora_auto_target_max"), info=I18N("info_auto_target_max"))
+                with gr.Row():
+                    auto_tune_chk = gr.Checkbox(
+                        label=I18N("lora_auto_tune"),
+                        value=True,
+                        info=I18N("info_auto_tune"),
+                    )
+                    auto_start_train = gr.Checkbox(
+                        label=I18N("lora_auto_start_training"),
+                        value=False,
+                    )
+                auto_btn = gr.Button(I18N("lora_auto_btn"), variant="primary", size="lg")
+                auto_log = gr.Textbox(label=I18N("lora_auto_log"), interactive=False, lines=18)
 
-                # === РУЧНОЙ режим ===
-                with gr.Tab(label=I18N("lora_train_title")):
-                    gr.Markdown(I18N("lora_manual_desc"))
-                    lora_files = gr.Files(
-                        label=I18N("label_audio_files"),
-                        file_types=[".wav", ".mp3", ".flac", ".m4a", ".ogg"],
-                        file_count="multiple",
-                    )
-                    lora_transcripts = gr.Textbox(
-                        label=I18N("label_transcripts"),
-                        placeholder=I18N("ph_transcripts"),
-                        lines=8,
-                    )
+            # === РУЧНОЙ режим ===
+            with gr.Accordion(I18N("lora_train_title"), open=False):
+                gr.Markdown(I18N("lora_manual_desc"))
+                lora_files = gr.Files(
+                    label=I18N("label_audio_files"),
+                    file_types=[".wav", ".mp3", ".flac", ".m4a", ".ogg"],
+                    file_count="multiple",
+                )
+                lora_transcripts = gr.Textbox(
+                    label=I18N("label_transcripts"),
+                    placeholder=I18N("ph_transcripts"),
+                    lines=8,
+                )
 
             gr.Markdown("---")
             gr.Markdown(I18N("md_step2_title"))
